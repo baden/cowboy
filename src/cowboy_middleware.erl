@@ -20,6 +20,5 @@
 -callback execute(Req, Env)
 	-> {ok, Req, Env}
 	| {suspend, module(), atom(), [any()]}
-	| {halt, Req}
-	| {error, cowboy:http_status(), Req}
+	| {stop, Req}
 	when Req::cowboy_req:req(), Env::env().

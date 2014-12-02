@@ -5,6 +5,12 @@ manipulating Ranch listeners.
 
 :: Types
 
+: fields() = [atom()
+	| {atom(), cowboy_constraints:constraint() | [cowboy_constraints:constraint()]}
+	| {atom(), cowboy_constraints:constraint() | [cowboy_constraints:constraint()], any()}]
+
+Fields for match operations. Constraint(s) and default value are optional.
+
 : http_headers() = [{binary(), iodata()}]
 
 HTTP headers as a list of key/values.
@@ -18,15 +24,6 @@ A binary status can be used to set a custom message.
 : http_version() = 'HTTP/1.1' | 'HTTP/1.0'
 
 HTTP version.
-
-: onrequest_fun() = fun((cowboy_req:req()) -> cowboy_req:req())
-
-Fun called immediately after receiving a request.
-
-It can perform any operation on the Req object, including
-reading the request body or replying. If a reply is sent,
-the processing of the request ends here, before any middleware
-is executed.
 
 : onresponse_fun() = fun((http_status(), http_headers(),
 	iodata(), cowboy_req:req()) -> cowboy_req:req())

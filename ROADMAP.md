@@ -6,12 +6,6 @@ list of planned changes and work to be done on the Cowboy
 server. It is intended to be exhaustive but some elements
 might still be missing.
 
-1.0 (R16 and R17)
------------------
-
-We are now in the final push to Cowboy 1.0. Further changes
-are expected to be bug fixes and documentation improvements.
-
 2.0 (R17 and R18)
 -----------------
 
@@ -26,65 +20,52 @@ A number of backward incompatible changes are planned. These
 changes are individually small, but together should result
 in a large improvement in usability.
 
-### cowboy_req
+### New cowboy_req function
 
-The interface of `cowboy_req` will be largely changed. The
-number one complaint about Cowboy today is that you have
-to keep track of the Req whenever you do anything. The new
-interface will minimize that.
+A convenience function will be added to more easily process
+HTML forms that were sent using POST. These forms have two
+main ways of being submitted: as a form urlencoded format,
+or as multipart. The latter case may also be used to submit
+files, therefore we also need a way to handle this. We also
+need to take into account that we are reading from the socket
+and can't take as much a shortcut as with `match_qs/2`.
 
-All functions will return a single term, excluding the body
-reading functions `body/{1,2}`, `body_qs/{1,2}`, `part/{1,2}`,
-`part_body/{1,2}`.
+The function will work similarly to other body reading functions,
+in that it may require more than one call to obtain everything.
+In this case there would be two return values: the `ok` return
+with the map filled with key/value pairs, ending the body reading;
+and the `file` return that informs the caller that a file has been
+provided and the caller must handle it. If the caller calls the
+function again without doing anything, the part is just skipped,
+like what `part/1` is doing. If a file is the last input from
+the form then a subsequent call will return an `ok` return with
+an empty map.
 
-Of the functions returning a single term, some of them will
-return a Req object. This includes the functions that already
-return Req: `compact/1`, `delete_resp_header/2`, `set_meta/3`,
-`set_resp_body/2`, `set_resp_body_fun/{2,3}`, `set_resp_cookie/4`,
-`set_resp_header/3`, and adds the `chunked_reply/{2,3}` and
-`reply/{2,3,4}` functions to the list.
+The interface would look as follow:
 
-Of note is that this will allow chaining all the response
-functions if that's what you fancy.
+```
+match_body(Fields, Req) -> match_body(Fields, Req, [])
+match_body(Fields, Req, Opts)
+	-> {ok, Map, Req}
+	| {file, FieldName, Filename, CType, CTransferEncoding, Map, Req}
+	when Req::req()
+```
 
-The `parse_header/{2,3}` function will now only return the
-parsed header value, and crash on error. It will also not
-cache the parsed value anymore, except for headers that Cowboy
-requires, like the connection header.
+It would be up to the caller to decide what to do with the
+maps returned. Fields are in order so the map returned may
+be empty if the form starts with a file, or may only
+contain the values before the file input if this one is
+in the middle of the form. It is of course possible to
+merge all maps returned into one though that should not
+be needed very often.
 
-It is unsure what will become of the `qs_val`, `qs_vals`,
-`cookie` and `cookies` functions. The main idea at this point
-is to replace them with a `parse_qs/2` and `parse_cookies/2`
-that would return the parsed list, and let the user decide
-how to access it.
-
-### init/terminate unification
-
-The first argument of the `init/3` function is too rarely used.
-It will be removed.
-
-The return value of the `init/2` function will become
-`{http, Req, State} | {loop, Req, State} | {Module, Req, State}`
-with `Module` being `cowboy_rest`, `cowboy_websocket` or a
-user provided module.
-
-The `rest_init` and `websocket_init` callbacks will be removed
-as they become unnecessary with the new `init/2` interface.
-
-Similarly, the `rest_terminate` and `websocket_terminate`
-callbacks will be removed in favor of a unified `terminate/3`.
-
-The `terminate/3` callback will become optional.
-
-### Middlewares
-
-The error tuple return value brings little value compared to
-the halt tuple. The error tuple will therefore be removed.
+It is also possible to switch from this function to only
+multipart functions if the function returns a `file` tuple,
+as this function is a higher level interface that simply
+calls the multipart functions when the request body is
+in multipart format.
 
 ### Hooks
-
-The `onrequest` hook will be removed. It can easily be replaced
-by a middleware.
 
 The interface of the `onresponse` hook will change. There has
 been a number of issues and added complexity with the current
@@ -114,10 +95,14 @@ interface that may be used in middlewares or hooks (but
 nowhere else). This includes the Req access and update
 functions and the new response function described above.
 
-### REST
+### Loop
 
-The `known_content_type` callback has no purpose, so it
-is going to be removed.
+We probably want to send something other than 500 when the
+max data read value has been reached. This happens when the
+client is misbehaving and is not a server error, but rather
+a safeguard.
+
+### REST
 
 The documentation for all REST callbacks will be updated
 to describe whether they can have side effects. This will
@@ -125,9 +110,3 @@ allows us to build introspection tools on top of a working
 REST API.
 
 Range support will be added.
-
-Under consideration
--------------------
-
- *  Convenience API for extracting query string and body
-    information, similar to PHP's $_GET, $_POST and $_FILES

@@ -14,7 +14,6 @@ as a Ranch protocol.
 	| {max_keepalive, non_neg_integer()}
 	| {max_request_line_length, non_neg_integer()}
 	| {middlewares, [module()]}
-	| {onrequest, cowboy:onrequest_fun()}
 	| {onresponse, cowboy:onresponse_fun()}
 	| {timeout, timeout()}]
 
@@ -67,10 +66,6 @@ Maximum length of the request line.
 
 List of middlewares to execute for every requests.
 
-: onrequest (undefined)
-
-Fun called every time a request is received.
-
 : onresponse (undefined)
 
 Fun called every time a response is sent.
@@ -78,7 +73,3 @@ Fun called every time a response is sent.
 : timeout (5000)
 
 Time in ms with no requests before Cowboy closes the connection.
-
-:: Exports
-
-None.

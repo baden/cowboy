@@ -20,6 +20,11 @@
 -export([stop_listener/1]).
 -export([set_env/3]).
 
+-type fields() :: [atom()
+	| {atom(), cowboy_constraints:constraint() | [cowboy_constraints:constraint()]}
+	| {atom(), cowboy_constraints:constraint() | [cowboy_constraints:constraint()], any()}].
+-export_type([fields/0]).
+
 -type http_headers() :: [{binary(), iodata()}].
 -export_type([http_headers/0]).
 
@@ -28,9 +33,6 @@
 
 -type http_version() :: 'HTTP/1.1' | 'HTTP/1.0'.
 -export_type([http_version/0]).
-
--type onrequest_fun() :: fun((Req) -> Req).
--export_type([onrequest_fun/0]).
 
 -type onresponse_fun() ::
 	fun((http_status(), http_headers(), iodata(), Req) -> Req).

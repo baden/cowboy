@@ -24,7 +24,7 @@
 -export([system_code_change/4]).
 
 %% Internal request process.
--export([request_init/11]).
+-export([request_init/10]).
 -export([resume/5]).
 -export([reply/4]).
 -export([stream_reply/3]).
@@ -57,20 +57,18 @@
 	socket :: inet:socket(),
 	transport :: module(),
 	buffer = <<>> :: binary(),
-	middlewares :: [module()],
-	env :: cowboy_middleware:env(),
-	onrequest :: undefined | cowboy:onrequest_fun(),
-	onresponse :: undefined | cowboy:onresponse_fun(),
-	peer :: {inet:ip_address(), Port::non_neg_integer()},
-	zdef :: zlib:zstream(),
-	zinf :: zlib:zstream(),
-	last_streamid = 0 :: non_neg_integer(),
+	middlewares,
+	env,
+	onresponse,
+	peer,
+	zdef,
+	zinf,
+	last_streamid = 0 :: streamid(),
 	children = [] :: [#child{}]
 }).
 
 -type opts() :: [{env, cowboy_middleware:env()}
 	| {middlewares, [module()]}
-	| {onrequest, cowboy:onrequest_fun()}
 	| {onresponse, cowboy:onresponse_fun()}].
 -export_type([opts/0]).
 
@@ -97,13 +95,12 @@ init(Parent, Ref, Socket, Transport, Opts) ->
 	{ok, Peer} = Transport:peername(Socket),
 	Middlewares = get_value(middlewares, Opts, [cowboy_router, cowboy_handler]),
 	Env = [{listener, Ref}|get_value(env, Opts, [])],
-	OnRequest = get_value(onrequest, Opts, undefined),
 	OnResponse = get_value(onresponse, Opts, undefined),
 	Zdef = cow_spdy:deflate_init(),
 	Zinf = cow_spdy:inflate_init(),
 	ok = ranch:accept_ack(Ref),
 	loop(#state{parent=Parent, socket=Socket, transport=Transport,
-		middlewares=Middlewares, env=Env, onrequest=OnRequest,
+		middlewares=Middlewares, env=Env,
 		onresponse=OnResponse, peer=Peer, zdef=Zdef, zinf=Zinf}).
 
 loop(State=#state{parent=Parent, socket=Socket, transport=Transport,
@@ -126,7 +123,7 @@ loop(State=#state{parent=Parent, socket=Socket, transport=Transport,
 					FromPid ! {recv, FromSocket, {ok, InBuffer}},
 					loop(replace_child(Child#child{in_buffer= <<>>}, State));
 				byte_size(InBuffer) >= Length ->
-					<< Data:Length/binary, Rest/binary >> = InBuffer,
+					<< Data:Length/binary, Rest/bits >> = InBuffer,
 					FromPid ! {recv, FromSocket, {ok, Data}},
 					loop(replace_child(Child#child{in_buffer=Rest}, State));
 				true ->
@@ -257,11 +254,11 @@ handle_frame(State, {syn_stream, StreamID, AssocToStreamID,
 %% Erlang does not allow us to control the priority of processes
 %% so we ignore that value entirely.
 handle_frame(State=#state{middlewares=Middlewares, env=Env,
-		onrequest=OnRequest, onresponse=OnResponse, peer=Peer},
+		onresponse=OnResponse, peer=Peer},
 		{syn_stream, StreamID, _, IsFin, _, _,
 		Method, _, Host, Path, Version, Headers}) ->
 	Pid = spawn_link(?MODULE, request_init, [
-		{self(), StreamID}, Peer, OnRequest, OnResponse,
+		{self(), StreamID}, Peer, OnResponse,
 		Env, Middlewares, Method, Host, Path, Version, Headers
 	]),
 	new_child(State, StreamID, Pid, IsFin);
@@ -296,7 +293,7 @@ handle_frame(State, {data, StreamID, IsFin, Data}) ->
 			Child#child{input=IsFin2, in_buffer= <<>>, is_recv=false};
 		{passive, FromSocket, FromPid, Length, TRef}
 				when byte_size(Data2) >= Length ->
-			<< Data3:Length/binary, Rest/binary >> = Data2,
+			<< Data3:Length/binary, Rest/bits >> = Data2,
 			FromPid ! {recv, FromSocket, {ok, Data3}},
 			cancel_recv_timeout(StreamID, TRef),
 			Child#child{input=IsFin2, in_buffer=Rest, is_recv=false};
@@ -385,11 +382,10 @@ delete_child(Pid, State=#state{children=Children}) ->
 %% Request process.
 
 -spec request_init(socket(), {inet:ip_address(), inet:port_number()},
-		cowboy:onrequest_fun(), cowboy:onresponse_fun(),
-		cowboy_middleware:env(), [module()],
+		cowboy:onresponse_fun(), cowboy_middleware:env(), [module()],
 		binary(), binary(), binary(), binary(), [{binary(), binary()}])
 	-> ok.
-request_init(FakeSocket, Peer, OnRequest, OnResponse,
+request_init(FakeSocket, Peer, OnResponse,
 		Env, Middlewares, Method, Host, Path, Version, Headers) ->
 	{Host2, Port} = cow_http:parse_fullhost(Host),
 	{Path2, Qs} = cow_http:parse_fullpath(Path),
@@ -397,16 +393,7 @@ request_init(FakeSocket, Peer, OnRequest, OnResponse,
 	Req = cowboy_req:new(FakeSocket, ?MODULE, Peer,
 		Method, Path2, Qs, Version2, Headers,
 		Host2, Port, <<>>, true, false, OnResponse),
-	case OnRequest of
-		undefined ->
-			execute(Req, Env, Middlewares);
-		_ ->
-			Req2 = OnRequest(Req),
-			case cowboy_req:get(resp_state, Req2) of
-				waiting -> execute(Req2, Env, Middlewares);
-				_ -> ok
-			end
-	end.
+	execute(Req, Env, Middlewares).
 
 -spec execute(cowboy_req:req(), cowboy_middleware:env(), [module()])
 	-> ok.
@@ -419,10 +406,8 @@ execute(Req, Env, [Middleware|Tail]) ->
 		{suspend, Module, Function, Args} ->
 			erlang:hibernate(?MODULE, resume,
 				[Env, Tail, Module, Function, Args]);
-		{halt, Req2} ->
-			cowboy_req:ensure_response(Req2, 204);
-		{error, Status, Req2} ->
-			cowboy_req:reply(Status, Req2)
+		{stop, Req2} ->
+			cowboy_req:ensure_response(Req2, 204)
 	end.
 
 -spec resume(cowboy_middleware:env(), [module()],
@@ -434,10 +419,8 @@ resume(Env, Tail, Module, Function, Args) ->
 		{suspend, Module2, Function2, Args2} ->
 			erlang:hibernate(?MODULE, resume,
 				[Env, Tail, Module2, Function2, Args2]);
-		{halt, Req2} ->
-			cowboy_req:ensure_response(Req2, 204);
-		{error, Status, Req2} ->
-			cowboy_req:reply(Status, Req2)
+		{stop, Req2} ->
+			cowboy_req:ensure_response(Req2, 204)
 	end.
 
 %% Reply functions used by cowboy_req.

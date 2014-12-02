@@ -34,7 +34,6 @@ all() ->
 		{group, https},
 		{group, http_compress},
 		{group, https_compress},
-		{group, onrequest},
 		{group, onresponse},
 		{group, onresponse_capitalize},
 		{group, parse_host},
@@ -43,7 +42,6 @@ all() ->
 
 groups() ->
 	Tests = cowboy_test:all(?MODULE) -- [
-		onrequest, onrequest_reply, onrequest_hook,
 		onresponse_crash, onresponse_reply, onresponse_capitalize,
 		parse_host, set_env_dispatch
 	],
@@ -52,10 +50,6 @@ groups() ->
 		{https, [parallel], Tests},
 		{http_compress, [parallel], Tests},
 		{https_compress, [parallel], Tests},
-		{onrequest, [parallel], [
-			onrequest,
-			onrequest_reply
-		]},
 		{onresponse, [parallel], [
 			onresponse_crash,
 			onresponse_reply
@@ -98,15 +92,6 @@ init_per_group(Name = https_compress, Config) ->
 		{compress, true}
 	], Config);
 %% Most, if not all of these, should be in separate test suites.
-init_per_group(onrequest, Config) ->
-	{ok, _} = cowboy:start_http(onrequest, 100, [{port, 0}], [
-		{env, [{dispatch, init_dispatch(Config)}]},
-		{max_keepalive, 50},
-		{onrequest, fun do_onrequest_hook/1},
-		{timeout, 500}
-	]),
-	Port = ranch:get_port(onrequest),
-	[{type, tcp}, {port, Port}, {opts, []}|Config];
 init_per_group(onresponse, Config) ->
 	{ok, _} = cowboy:start_http(onresponse, 100, [{port, 0}], [
 		{env, [{dispatch, init_dispatch(Config)}]},
@@ -157,7 +142,6 @@ init_dispatch(Config) ->
 		{"localhost", [
 			{"/chunked_response", http_chunked, []},
 			{"/streamed_response", http_streamed, []},
-			{"/init_shutdown", http_init_shutdown, []},
 			{"/headers/dupe", http_handler,
 				[{headers, [{<<"connection">>, <<"close">>}]}]},
 			{"/set_resp/header", http_set_resp,
@@ -272,6 +256,8 @@ The document has moved
 		{400, "\n"},
 		{400, "Garbage\r\n\r\n"},
 		{400, "\r\n\r\n\r\n\r\n\r\n\r\n"},
+		{400, " / HTTP/1.1\r\nHost: localhost\r\n\r\n"},
+		{400, "GET  HTTP/1.1\r\nHost: localhost\r\n\r\n"},
 		{400, "GET / HTTP/1.1\r\nHost: ninenines.eu\r\n\r\n"},
 		{400, "GET http://proxy/ HTTP/1.1\r\n\r\n"},
 		{400, "GET / HTTP/1.1\r\nHost: localhost:bad_port\r\n\r\n"},
@@ -307,9 +293,7 @@ check_status(Config) ->
 		{403, "/static/unreadable"},
 		{404, "/not/found"},
 		{404, "/static/not_found"},
-		{500, "/handler_errors?case=handle_before_reply"},
-		{500, "/handler_errors?case=init_before_reply"},
-		{666, "/init_shutdown"}
+		{500, "/handler_errors?case=init_before_reply"}
 	],
 	_ = [{Status, URL} = begin
 		Ret = do_get(URL, Config),
@@ -357,37 +341,9 @@ echo_body_qs_max_length(Config) ->
 	{response, nofin, 413, _} = gun:await(ConnPid, Ref),
 	ok.
 
-error_chain_handle_after_reply(Config) ->
-	{ConnPid, MRef} = gun_monitor_open(Config),
-	Ref1 = gun:get(ConnPid, "/"),
-	Ref2 = gun:get(ConnPid, "/handler_errors?case=handle_after_reply"),
-	{response, nofin, 200, _} = gun:await(ConnPid, Ref1, MRef),
-	{response, nofin, 200, _} = gun:await(ConnPid, Ref2, MRef),
-	gun_is_gone(ConnPid, MRef).
-
-error_chain_handle_before_reply(Config) ->
-	{ConnPid, MRef} = gun_monitor_open(Config),
-	Ref1 = gun:get(ConnPid, "/"),
-	Ref2 = gun:get(ConnPid, "/handler_errors?case=handle_before_reply"),
-	{response, nofin, 200, _} = gun:await(ConnPid, Ref1, MRef),
-	{response, fin, 500, _} = gun:await(ConnPid, Ref2, MRef),
-	gun_is_gone(ConnPid, MRef).
-
-error_handle_after_reply(Config) ->
-	{ConnPid, MRef} = gun_monitor_open(Config),
-	Ref = gun:get(ConnPid, "/handler_errors?case=handle_after_reply"),
-	{response, nofin, 200, _} = gun:await(ConnPid, Ref, MRef),
-	gun_is_gone(ConnPid, MRef).
-
 error_init_after_reply(Config) ->
 	{ConnPid, MRef} = gun_monitor_open(Config),
 	Ref = gun:get(ConnPid, "/handler_errors?case=init_after_reply"),
-	{response, nofin, 200, _} = gun:await(ConnPid, Ref, MRef),
-	gun_is_gone(ConnPid, MRef).
-
-error_init_reply_handle_error(Config) ->
-	{ConnPid, MRef} = gun_monitor_open(Config),
-	Ref = gun:get(ConnPid, "/handler_errors?case=init_reply_handle_error"),
 	{response, nofin, 200, _} = gun:await(ConnPid, Ref, MRef),
 	gun_is_gone(ConnPid, MRef).
 
@@ -425,6 +381,34 @@ http10_hostless(Config) ->
 	200 = do_raw("GET /http1.0/hostless HTTP/1.0\r\n\r\n",
 		[{port, Port10}|Config]),
 	cowboy:stop_listener(http10_hostless).
+
+http10_keepalive_default(Config) ->
+	Normal = "GET / HTTP/1.0\r\nhost: localhost\r\n\r\n",
+	Client = raw_open(Config),
+	ok = raw_send(Client, Normal),
+	case catch raw_recv_head(Client) of
+		{'EXIT', _} -> error(closed);
+		_ -> ok
+	end,
+	ok = raw_send(Client, Normal),
+	case catch raw_recv_head(Client) of
+		{'EXIT', _} -> closed;
+		_ -> error(not_closed)
+	end.
+
+http10_keepalive_forced(Config) ->
+	Keepalive = "GET / HTTP/1.0\r\nhost: localhost\r\nConnection: keep-alive\r\n\r\n",
+	Client = raw_open(Config),
+	ok = raw_send(Client, Keepalive),
+	case catch raw_recv_head(Client) of
+		{'EXIT', _} -> error(closed);
+		_ -> ok
+	end,
+	ok = raw_send(Client, Keepalive),
+	case catch raw_recv_head(Client) of
+		{'EXIT', Err} -> error({closed, Err});
+		_ -> ok
+	end.
 
 keepalive_max(Config) ->
 	{ConnPid, MRef} = gun_monitor_open(Config),
@@ -546,33 +530,6 @@ nc_rand(Config) ->
 nc_zero(Config) ->
 	do_nc(Config, "/dev/zero").
 
-onrequest(Config) ->
-	ConnPid = gun_open(Config),
-	Ref = gun:get(ConnPid, "/"),
-	{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
-	{<<"server">>, <<"Serenity">>} = lists:keyfind(<<"server">>, 1, Headers),
-	{ok, <<"http_handler">>} = gun:await_body(ConnPid, Ref),
-	ok.
-
-onrequest_reply(Config) ->
-	ConnPid = gun_open(Config),
-	Ref = gun:get(ConnPid, "/?reply=1"),
-	{response, nofin, 200, Headers} = gun:await(ConnPid, Ref),
-	{<<"server">>, <<"Cowboy">>} = lists:keyfind(<<"server">>, 1, Headers),
-	{ok, <<"replied!">>} = gun:await_body(ConnPid, Ref),
-	ok.
-
-%% Hook for the above onrequest tests.
-do_onrequest_hook(Req) ->
-	case cowboy_req:qs_val(<<"reply">>, Req) of
-		{undefined, Req2} ->
-			cowboy_req:set_resp_header(<<"server">>, <<"Serenity">>, Req2);
-		{_, Req2} ->
-			{ok, Req3} = cowboy_req:reply(
-				200, [], <<"replied!">>, Req2),
-			Req3
-	end.
-
 onresponse_capitalize(Config) ->
 	Client = raw_open(Config),
 	ok = raw_send(Client, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\n"),
@@ -584,8 +541,7 @@ onresponse_capitalize(Config) ->
 do_onresponse_capitalize_hook(Status, Headers, Body, Req) ->
 	Headers2 = [{cowboy_bstr:capitalize_token(N), V}
 		|| {N, V} <- Headers],
-	{ok, Req2} = cowboy_req:reply(Status, Headers2, Body, Req),
-	Req2.
+	cowboy_req:reply(Status, Headers2, Body, Req).
 
 onresponse_crash(Config) ->
 	ConnPid = gun_open(Config),
@@ -602,9 +558,7 @@ onresponse_reply(Config) ->
 
 %% Hook for the above onresponse tests.
 do_onresponse_hook(_, Headers, _, Req) ->
-	{ok, Req2} = cowboy_req:reply(
-		<<"777 Lucky">>, [{<<"x-hook">>, <<"onresponse">>}|Headers], Req),
-	Req2.
+	cowboy_req:reply(<<"777 Lucky">>, [{<<"x-hook">>, <<"onresponse">>}|Headers], Req).
 
 parse_host(Config) ->
 	ConnPid = gun_open(Config),
@@ -752,7 +706,7 @@ rest_patch(Config) ->
 	Tests = [
 		{204, [{<<"content-type">>, <<"text/plain">>}], <<"whatever">>},
 		{400, [{<<"content-type">>, <<"text/plain">>}], <<"false">>},
-		{400, [{<<"content-type">>, <<"text/plain">>}], <<"halt">>},
+		{400, [{<<"content-type">>, <<"text/plain">>}], <<"stop">>},
 		{415, [{<<"content-type">>, <<"application/json">>}], <<"bad_content_type">>}
 	],
 	ConnPid = gun_open(Config),

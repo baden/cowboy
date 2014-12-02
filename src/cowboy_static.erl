@@ -15,8 +15,7 @@
 
 -module(cowboy_static).
 
--export([init/3]).
--export([rest_init/2]).
+-export([init/2]).
 -export([malformed_request/2]).
 -export([forbidden/2]).
 -export([content_types_provided/2]).
@@ -39,33 +38,27 @@
 
 -type state() :: {binary(), {ok, #file_info{}} | {error, atom()}, extra()}.
 
--spec init(_, _, _) -> {upgrade, protocol, cowboy_rest}.
-init(_, _, _) ->
-	{upgrade, protocol, cowboy_rest}.
-
 %% Resolve the file that will be sent and get its file information.
 %% If the handler is configured to manage a directory, check that the
 %% requested file is inside the configured directory.
 
--spec rest_init(Req, opts())
-	-> {ok, Req, error | state()}
-	when Req::cowboy_req:req().
-rest_init(Req, {Name, Path}) ->
-	rest_init_opts(Req, {Name, Path, []});
-rest_init(Req, {Name, App, Path})
+-spec init(Req, opts()) -> {cowboy_rest, Req, error | state()} when Req::cowboy_req:req().
+init(Req, {Name, Path}) ->
+	init_opts(Req, {Name, Path, []});
+init(Req, {Name, App, Path})
 		when Name =:= priv_file; Name =:= priv_dir ->
-	rest_init_opts(Req, {Name, App, Path, []});
-rest_init(Req, Opts) ->
-	rest_init_opts(Req, Opts).
+	init_opts(Req, {Name, App, Path, []});
+init(Req, Opts) ->
+	init_opts(Req, Opts).
 
-rest_init_opts(Req, {priv_file, App, Path, Extra}) ->
-	rest_init_info(Req, absname(priv_path(App, Path)), Extra);
-rest_init_opts(Req, {file, Path, Extra}) ->
-	rest_init_info(Req, absname(Path), Extra);
-rest_init_opts(Req, {priv_dir, App, Path, Extra}) ->
-	rest_init_dir(Req, priv_path(App, Path), Extra);
-rest_init_opts(Req, {dir, Path, Extra}) ->
-	rest_init_dir(Req, Path, Extra).
+init_opts(Req, {priv_file, App, Path, Extra}) ->
+	init_info(Req, absname(priv_path(App, Path)), Extra);
+init_opts(Req, {file, Path, Extra}) ->
+	init_info(Req, absname(Path), Extra);
+init_opts(Req, {priv_dir, App, Path, Extra}) ->
+	init_dir(Req, priv_path(App, Path), Extra);
+init_opts(Req, {dir, Path, Extra}) ->
+	init_dir(Req, Path, Extra).
 
 priv_path(App, Path) ->
 	case code:priv_dir(App) of
@@ -83,18 +76,18 @@ absname(Path) when is_list(Path) ->
 absname(Path) when is_binary(Path) ->
 	filename:absname(Path).
 
-rest_init_dir(Req, Path, Extra) when is_list(Path) ->
-	rest_init_dir(Req, list_to_binary(Path), Extra);
-rest_init_dir(Req, Path, Extra) ->
+init_dir(Req, Path, Extra) when is_list(Path) ->
+	init_dir(Req, list_to_binary(Path), Extra);
+init_dir(Req, Path, Extra) ->
 	Dir = fullpath(filename:absname(Path)),
-	{PathInfo, Req2} = cowboy_req:path_info(Req),
+	PathInfo = cowboy_req:path_info(Req),
 	Filepath = filename:join([Dir|PathInfo]),
 	Len = byte_size(Dir),
 	case fullpath(Filepath) of
 		<< Dir:Len/binary, $/, _/binary >> ->
-			rest_init_info(Req2, Filepath, Extra);
+			init_info(Req, Filepath, Extra);
 		_ ->
-			{ok, Req2, error}
+			{cowboy_rest, Req, error}
 	end.
 
 fullpath(Path) ->
@@ -110,9 +103,9 @@ fullpath([<<"..">>|Tail], [_|Acc]) ->
 fullpath([Segment|Tail], Acc) ->
 	fullpath(Tail, [Segment|Acc]).
 
-rest_init_info(Req, Path, Extra) ->
+init_info(Req, Path, Extra) ->
 	Info = file:read_file_info(Path, [{time, universal}]),
-	{ok, Req, {Path, Info, Extra}}.
+	{cowboy_rest, Req, {Path, Info, Extra}}.
 
 -ifdef(TEST).
 fullpath_test_() ->
@@ -141,7 +134,7 @@ good_path_check_test_() ->
 	],
 	[{P, fun() ->
 		case fullpath(P) of
-			<< "/home/cowboy/", _/binary >> -> ok
+			<< "/home/cowboy/", _/bits >> -> ok
 		end
 	end} || P <- Tests].
 
@@ -152,7 +145,7 @@ bad_path_check_test_() ->
 	],
 	[{P, fun() ->
 		error = case fullpath(P) of
-			<< "/home/cowboy/", _/binary >> -> ok;
+			<< "/home/cowboy/", _/bits >> -> ok;
 			_ -> error
 		end
 	end} || P <- Tests].
@@ -174,7 +167,7 @@ good_path_win32_check_test_() ->
 	end,
 	[{P, fun() ->
 		case fullpath(P) of
-			<< "c:/home/cowboy/", _/binary >> -> ok
+			<< "c:/home/cowboy/", _/bits >> -> ok
 		end
 	end} || P <- Tests].
 
@@ -192,7 +185,7 @@ bad_path_win32_check_test_() ->
 	end,
 	[{P, fun() ->
 		error = case fullpath(P) of
-			<< "c:/home/cowboy/", _/binary >> -> ok;
+			<< "c:/home/cowboy/", _/bits >> -> ok;
 			_ -> error
 		end
 	end} || P <- Tests].
